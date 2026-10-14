@@ -1,0 +1,129 @@
+name: bank
+
+services:
+  # ---------- TIER 3: DATABASES ----------
+  accounts-db:
+    image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/accounts-db:v0.6.11
+    env_file: [local/env/environment.env, local/env/accounts-db.env, local/env/demo-data.env]
+    volumes: [accounts-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U accounts-admin -d accounts-db"]
+      interval: 5s
+      retries: 20
+
+  ledger-db:
+    image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/ledger-db:v0.6.11
+    env_file: [local/env/environment.env, local/env/ledger-db.env, local/env/demo-data.env]
+    volumes: [ledger-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d postgresdb"]
+      interval: 5s
+      retries: 20
+
+  # ---------- TIER 2: BACKEND APIs ----------
+  userservice:
+    image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/userservice:v0.6.11
+    env_file: [local/env/environment.env, local/env/accounts-db.env]
+    environment:
+      VERSION: v0.6.11
+      PORT: "8080"
+      ENABLE_TRACING: "false"
+      TOKEN_EXPIRY_SECONDS: "3600"
+      PRIV_KEY_PATH: /tmp/.ssh/privatekey
+      LOG_LEVEL: info
+    volumes: [./local/jwt:/tmp/.ssh:ro]
+    depends_on:
+      accounts-db: { condition: service_healthy }
+
+  contacts:
+    image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/contacts:v0.6.11
+    env_file: [local/env/environment.env, local/env/accounts-db.env]
+    environment:
+      VERSION: v0.6.11
+      PORT: "8080"
+      ENABLE_TRACING: "false"
+      LOG_LEVEL: info
+    volumes: [./local/jwt:/tmp/.ssh:ro]
+    depends_on:
+      accounts-db: { condition: service_healthy }
+
+  ledgerwriter:
+    image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/ledgerwriter:v0.6.11
+    hostname: ledgerwriter-local
+    env_file: [local/env/environment.env, local/env/service-api.env, local/env/ledger-db.env]
+    environment:
+      VERSION: v0.6.11
+      PORT: "8080"
+      ENABLE_TRACING: "false"
+      ENABLE_METRICS: "false"
+      NAMESPACE: default
+      LOG_LEVEL: info
+    volumes: [./local/jwt:/tmp/.ssh:ro]
+    depends_on:
+      ledger-db: { condition: service_healthy }
+
+  balancereader:
+    image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/balancereader:v0.6.11
+    hostname: balancereader-local
+    env_file: [local/env/environment.env, local/env/ledger-db.env]
+    environment:
+      VERSION: v0.6.11
+      PORT: "8080"
+      ENABLE_TRACING: "false"
+      ENABLE_METRICS: "false"
+      POLL_MS: "100"
+      CACHE_SIZE: "1000000"
+      NAMESPACE: default
+      LOG_LEVEL: info
+    volumes: [./local/jwt:/tmp/.ssh:ro]
+    depends_on:
+      ledger-db: { condition: service_healthy }
+
+  transactionhistory:
+    image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/transactionhistory:v0.6.11
+    hostname: transactionhistory-local
+    env_file: [local/env/environment.env, local/env/ledger-db.env]
+    environment:
+      VERSION: v0.6.11
+      PORT: "8080"
+      ENABLE_TRACING: "false"
+      ENABLE_METRICS: "false"
+      POLL_MS: "100"
+      CACHE_SIZE: "1000"
+      CACHE_MINUTES: "60"
+      HISTORY_LIMIT: "100"
+      NAMESPACE: default
+      LOG_LEVEL: info
+    volumes: [./local/jwt:/tmp/.ssh:ro]
+    depends_on:
+      ledger-db: { condition: service_healthy }
+
+  # ---------- TIER 1: WEBSITE ----------
+  frontend:
+    image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/frontend:v0.6.11
+    env_file: [local/env/environment.env, local/env/service-api.env]
+    environment:
+      VERSION: v0.6.11
+      PORT: "8080"
+      ENABLE_TRACING: "false"
+      SCHEME: http
+      LOG_LEVEL: info
+      DEFAULT_USERNAME: testuser
+      DEFAULT_PASSWORD: bankofanthos
+    volumes: [./local/jwt:/tmp/.ssh:ro]
+    ports: ["8080:8080"]
+    depends_on: [userservice, contacts, ledgerwriter, balancereader, transactionhistory]
+
+  # ---------- OPTIONAL: FAKE USERS ----------
+  loadgenerator:
+    image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/loadgenerator:v0.6.11
+    profiles: [load]
+    environment:
+      FRONTEND_ADDR: frontend:8080
+      USERS: "5"
+      LOG_LEVEL: error
+    depends_on: [frontend]
+
+volumes:
+  accounts-data:
+  ledger-data:
